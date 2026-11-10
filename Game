@@ -1,0 +1,345 @@
+class_name Country
+extends Node
+
+signal day_passed(country_name: String)
+
+@export var country_name: String = "Iran"
+@export var is_player: bool = false
+
+# ۱. منابع و خزانه
+var treasury: float = 10_000_000.0 # بودجه نقدی ($)
+var oil_barrels: float = 500_000.0
+var chicken_meat_tons: float = 20_000.0
+var caviar_kg: float = 1_500.0
+
+# نرخ تولید روزانه
+var oil_daily_production: float = 50_000.0
+var chicken_daily_production: float = 2_000.0
+var caviar_daily_production: float = 100.0
+
+# ۲. نیروهای نظامی پایه
+var military = {
+	"f35": 0,
+	"sukhoi": 24,
+	"tanks": 1500,
+	"helicopters": 120,
+	"air_defense": 80,
+	"drones": 300,
+	"missiles_fattah": 15,
+	"missiles_khorramshahr": 10
+}
+
+# ۳. روابط دیپلماتیک (ID کشور: مقدار رابطه بین -100 تا +100)
+var diplomatic_relations: Dictionary = {}
+
+func _process_daily_economy() -> void:
+	# افزودن تولید روزانه
+	oil_barrels += oil_daily_production
+	chicken_meat_tons += chicken_daily_production
+	caviar_kg += caviar_daily_production
+	
+	# هزینه نگهداری ارتش (روزی ۱۰۰ دلار به ازای هر واحد نظامی)
+	var total_units = 0
+	for count in military.values():
+		total_units += count
+	var military_upkeep = total_units * 100.0
+	
+	treasury -= military_upkeep
+	emit_signal("day_passed", country_name)
+
+# تابع فروش و صادرات کالا به بازار جهانی
+func export_resource(resource_type: String, amount: float, unit_price: float) -> bool:
+	match resource_type:
+		"oil":
+			if oil_barrels >= amount:
+				oil_barrels -= amount
+				treasury += amount * unit_price
+				return true
+		"chicken":
+			if chicken_meat_tons >= amount:
+				chicken_meat_tons -= amount
+				treasury += amount * unit_price
+				return true
+		"caviar":
+			if caviar_kg >= amount:
+				caviar_kg -= amount
+				treasury += amount * unit_price
+				return true
+	return false
+  class_name GlobalMarket
+extends Node
+
+# قیمت پایه هر واحد ($)
+var prices = {
+	"oil": 75.0,       # به ازای هر بشکه
+	"chicken": 2200.0, # به ازای هر تن
+	"caviar": 1500.0   # به ازای هر کیلوگرم
+}
+
+# نوسان روزانه قیمت‌ها (شبیه‌ساز عرضه و تقاضا)
+func update_market_daily() -> void:
+	for resource in prices.keys():
+		var fluctuation = randf_range(-0.05, 0.05) # تغییر بین منفی ۵ تا مثبت ۵ درصد
+		prices[resource] = max(10.0, prices[resource] * (1.0 + fluctuation))
+
+# معامله صادرات برای یک کشور
+func sell_to_market(country: Country, resource: String, amount: float) -> bool:
+	if not prices.has(resource):
+		return false
+	var current_price = prices[resource]
+	return country.export_resource(resource, amount, current_price)
+  class_name MilitaryRAndD
+extends Node
+
+# فناوری‌های موشکی و تسلیحاتی
+var unlocked_techs = {
+	"khorramshahr_tech": false,
+	"fattah_hypersonic_tech": false,
+	"advanced_drones": false
+}
+
+const TECH_COSTS = {
+	"khorramshahr_tech": 5_000_000.0,
+	"fattah_hypersonic_tech": 12_000_000.0,
+	"advanced_drones": 3_000_000.0
+}
+
+func research_technology(country: Country, tech_name: String) -> bool:
+	if not TECH_COSTS.has(tech_name) or unlocked_techs[tech_name]:
+		return false
+	if country.treasury >= TECH_COSTS[tech_name]:
+		country.treasury -= TECH_COSTS[tech_name]
+		unlocked_techs[tech_name] = true
+		return true
+	return false
+
+func produce_missiles(country: Country, missile_type: String, count: int) -> bool:
+	var unit_cost = 500_000.0 if missile_type == "missiles_fattah" else 300_000.0
+	var req_tech = "fattah_hypersonic_tech" if missile_type == "missiles_fattah" else "khorramshahr_tech"
+	
+	if not unlocked_techs[req_tech]:
+		return false
+	var total_cost = unit_cost * count
+	if country.treasury >= total_cost:
+		country.treasury -= total_cost
+		country.military[missile_type] += count
+		return true
+	return false
+  class_name DiplomacyAI
+extends Node
+
+enum RelationStatus { WAR = -100, HOSTILE = -50, NEUTRAL = 0, FRIENDLY = 50, ALLY = 100 }
+
+# تصمیم‌گیری روزانه هوش مصنوعی
+func process_ai_turn(ai_country: Country, all_countries: Array[Country], market: GlobalMarket) -> void:
+	if ai_country.is_player:
+		return
+		
+	# ۱. مدیریت اقتصاد خودکار: فروش نفت مازاد در صورت نیاز به پول
+	if ai_country.treasury < 2_000_000.0 and ai_country.oil_barrels > 10_000.0:
+		market.sell_to_market(ai_country, "oil", 10_000.0)
+		
+	# ۲. تصمیم‌گیری دیپلماتیک با رقبا
+	for other in all_countries:
+		if other == ai_country:
+			continue
+		var relation = ai_country.diplomatic_relations.get(other.country_name, 0)
+		
+		# اگر رابطه فاجعه‌بار باشه و قدرت نظامی حریف کمتر باشه، اعلام جنگ
+		if relation <= RelationStatus.HOSTILE and _calculate_military_power(ai_country) > _calculate_military_power(other) * 1.3:
+			declare_war(ai_country, other)
+
+func declare_war(aggressor: Country, defender: Country) -> void:
+	aggressor.diplomatic_relations[defender.country_name] = RelationStatus.WAR
+	defender.diplomatic_relations[aggressor.country_name] = RelationStatus.WAR
+	print("جنگ آغاز شد میان: %s و %s!" % [aggressor.country_name, defender.country_name])
+
+func _calculate_military_power(country: Country) -> float:
+	var m = country.military
+	return (m["tanks"] * 10.0) + (m["sukhoi"] * 50.0) + (m["f35"] * 80.0) + (m["missiles_fattah"] * 200.0)
+  class_name WarManager
+extends Node
+
+# حمله موشکی و پهپادی به کشور هدف
+func launch_missile_strike(attacker: Country, defender: Country, missile_type: String, count: int) -> Dictionary:
+	var available = attacker.military.get(missile_type, 0)
+	var fired = mini(available, count)
+	if fired <= 0:
+		return {"success": false, "message": "موشک کافی نداری!"}
+	
+	attacker.military[missile_type] -= fired
+	
+	# پدافند هوایی حریف تلاش می‌کنه رهگیری کنه (فتاح نرخ عبور بالاتری داره)
+	var interception_rate = 0.6 if missile_type == "missiles_khorramshahr" else 0.15
+	var air_defense_power = defender.military["air_defense"]
+	var intercepted = mini(fired, int((air_defense_power * 0.1) * interception_rate))
+	var landed = fired - intercepted
+	
+	# تخریب زیرساخت و نیروهای دشمن
+	var damage = landed * (250000.0 if missile_type == "missiles_fattah" else 150000.0)
+	defender.treasury = max(0.0, defender.treasury - damage)
+	defender.military["air_defense"] = max(0, defender.military["air_defense"] - int(landed * 0.2))
+	
+	return {
+		"success": true,
+		"fired": fired,
+		"intercepted": intercepted,
+		"landed": landed,
+		"damage_dealt": damage
+	}
+
+# حمله همه‌جانبه زمینی و هوایی (تصرف و غارت)
+func launch_full_invasion(attacker: Country, defender: Country) -> Dictionary:
+	var attacker_power = (attacker.military["tanks"] * 10.0) + (attacker.military["sukhoi"] * 40.0) + (attacker.military["f35"] * 60.0)
+	var defender_power = (defender.military["tanks"] * 12.0) + (defender.military["air_defense"] * 30.0)
+	
+	if attacker_power > defender_power:
+		# پیروزی مهاجم و غارت ۳۰ درصد خزانه و نفت
+		var looted_cash = defender.treasury * 0.3
+		var looted_oil = defender.oil_barrels * 0.3
+		defender.treasury -= looted_cash
+		defender.oil_barrels -= looted_oil
+		attacker.treasury += looted_cash
+		attacker.oil_barrels += looted_oil
+		
+		# تلفات
+		attacker.military["tanks"] = int(attacker.military["tanks"] * 0.85)
+		defender.military["tanks"] = int(defender.military["tanks"] * 0.4)
+		
+		return {"winner": attacker.country_name, "looted_cash": looted_cash, "looted_oil": looted_oil}
+	else:
+		# شکست مهاجم
+		attacker.military["tanks"] = int(attacker.military["tanks"] * 0.5)
+		return {"winner": defender.country_name, "message": "حمله دفع شد!"}
+    class_name IntelligenceAgency
+extends Node
+
+# سطح سازمان اطلاعاتی و امنیت داخلی
+var intel_level: int = 1
+var counter_intel_budget: float = 500_000.0 # بودجه ضدجاسوسی
+
+# ارتقای سازمان اطلاعاتی
+func upgrade_agency(country: Country) -> bool:
+	var cost = intel_level * 2_000_000.0
+	if country.treasury >= cost:
+		country.treasury -= cost
+		intel_level += 1
+		return true
+	return false
+
+# عملیات نفوذ و جاسوسی به کشور هدف
+func spy_on_country(attacker: Country, target: Country) -> Dictionary:
+	var mission_cost = 150_000.0
+	if attacker.treasury < mission_cost:
+		return {"success": false, "message": "بودجه عملیات کافی نیست!"}
+	
+	attacker.treasury -= mission_cost
+	
+	# شانس موفقیت بر اساس اختلاف سطح اطلاعاتی
+	var success_chance = clamp(0.5 + (intel_level * 0.1), 0.2, 0.85)
+	if randf() < success_chance:
+		# موفقیت: لو رفتن اطلاعات دقیق تسلیحات و خزانه هدف
+		return {
+			"success": true,
+			"target_treasury": target.treasury,
+			"target_military": target.military.duplicate(),
+			"message": "اطلاعات محرمانه با موفقیت استخراج شد!"
+		}
+	else:
+		# لو رفتن جاسوس و کاهش شدید روابط دیپلماتیک
+		var current_rel = attacker.diplomatic_relations.get(target.country_name, 0)
+		attacker.diplomatic_relations[target.country_name] = current_rel - 40
+		return {"success": false, "message": "جاسوس شناسایی و دستگیر شد! تنش دیپلماتیک بالا رفت."}
+
+# خرابکاری در صنایع نفتی یا موشکی هدف
+func sabotage_mission(attacker: Country, target: Country) -> Dictionary:
+	var cost = 500_000.0
+	if attacker.treasury < cost:
+		return {"success": false, "message": "بودجه خرابکاری نداری!"}
+	
+	attacker.treasury -= cost
+	if randf() > 0.4:
+		var destroyed_oil = target.oil_barrels * 0.25
+		target.oil_barrels -= destroyed_oil
+		return {"success": true, "destroyed_oil": destroyed_oil, "message": "انفجار در پالایشگاه هدف با موفقیت انجام شد!"}
+	
+	return {"success": false, "message": "تیم نفوذی توسط ضدجاسوسی متلاشی شد."}
+  class_name GameManager
+extends Node
+
+@export var day_length_seconds: float = 3.0 # هر چند ثانیه یک روز بگذره
+
+var player_country: Country
+var ai_countries: Array[Country] = []
+
+var market: GlobalMarket
+var diplomacy: DiplomacyAI
+var war_manager: WarManager
+var intel_agency: IntelligenceAgency
+
+var current_day: int = 1
+var timer: Timer
+
+func _ready() -> void:
+	market = GlobalMarket.new()
+	diplomacy = DiplomacyAI.new()
+	war_manager = WarManager.new()
+	intel_agency = IntelligenceAgency.new()
+	
+	_setup_countries()
+	_start_game_loop()
+
+func _setup_countries() -> void:
+	# کشور پلیر
+	player_country = Country.new()
+	player_country.country_name = "Iran"
+	player_country.is_player = true
+	add_child(player_country)
+	
+	# نمونه کشور هوش مصنوعی
+	var ai = Country.new()
+	ai.country_name = "Rival Nation"
+	ai.treasury = 8_000_000.0
+	ai.oil_barrels = 300_000.0
+	add_child(ai)
+	ai_countries.append(ai)
+
+func _start_game_loop() -> void:
+	timer = Timer.new()
+	timer.wait_time = day_length_seconds
+	timer.timeout.connect(_on_day_tick)
+	add_child(timer)
+	timer.start()
+
+func _on_day_tick() -> void:
+	current_day += 1
+	market.update_market_daily()
+	player_country._process_daily_economy()
+	
+	for ai in ai_countries:
+		ai._process_daily_economy()
+		diplomacy.process_ai_turn(ai, [player_country] + ai_countries, market)
+    extends Control
+
+@onready var gm: GameManager = get_node("/root/GameManager")
+
+# بار بالای صفحه (نمایش منابع مثل Clash of Clans)
+@onready var gold_label: Label = $TopBar/TreasuryLabel
+@onready var oil_label: Label = $TopBar/OilLabel
+
+func _process(_delta: float) -> void:
+	if gm and gm.player_country:
+		gold_label.text = "💰 خزانه: $%d" % int(gm.player_country.treasury)
+		oil_label.text = "🛢️ نفت: %d بشکه" % int(gm.player_country.oil_barrels)
+
+# دکمه اتک بزرگ پایین صفحه (Attack Button)
+func _on_attack_button_pressed() -> void:
+	var target = gm.ai_countries[0]
+	var result = gm.war_manager.launch_full_invasion(gm.player_country, target)
+	print("نتیجه حمله: ", result)
+
+# دکمه حمله موشکی فتاح
+func _on_fattah_strike_pressed() -> void:
+	var target = gm.ai_countries[0]
+	var res = gm.war_manager.launch_missile_strike(gm.player_country, target, "missiles_fattah", 5)
+	print("گزارش شلیک فتاح: ", res)
